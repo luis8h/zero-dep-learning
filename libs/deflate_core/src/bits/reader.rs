@@ -1,55 +1,67 @@
-use std::collections::VecDeque;
+//! This simple implementation of a bit reader reads bits one by one. It could be improved by a bulk
+//! method, but then it would be better to use word-sized input (u64) instead of u8 to really see
+//! the advantage
+
+#![allow(unused)]
 
 use super::Bit;
+use super::BitResult;
+use std::slice::Iter;
 
-pub struct BitReader {
-    position: u8, // binary mask
+pub struct BitReader<'a> {
+    position: u8, // bit mask
     buffer: u8,
-    content: VecDeque<u8>, // i think this could also be a slice in theory, but then the reader would
-                      // need to keep track of the current index
+    content: Iter<'a, u8>,
 }
-//
-// WARN: use iterator for cleaner API design: https://gemini.google.com/app/e457285b11281572?hl=de
-// The last approach or even the first one by implementing the BitReader directly as a iterator
-// might be even cleaner.
-//
-// EDIT:
-// use a slice as input
-// implement a read_n_bits method which returns a BitResult (can contain any number of bits) (https://gemini.google.com/app/53478774b716bb6c?hl=de)
-// the bit result has methods for eg. retrieving a number, string etc. from the bits
-// there should be also a trait that can be implemented so that the caller can build his own parses
-// for bit result
-//
-// the BitResult does not use Bit but u8 oderso for better performance
-//
-// Also document why other approaches like the
 
-impl BitReader {
-    pub fn new(mut content: VecDeque<u8>) -> Self {
-        // TODO: maybe do this in the next bit method?
-        let buffer = content.pop_front().expect("Cannot read from empty content");
-
+impl<'a> BitReader<'a> {
+    pub fn new(content: &'a [u8]) -> Self {
         BitReader {
-            position: 0b00000001,
-            buffer,
-            content,
+            position: 0,
+            content: content.iter(),
+            buffer: 0,
         }
     }
 
+    /// Reads the next Bit of a BitStream.
     pub fn next_bit(&mut self) -> Bit {
+        // reset position after overflow and assign next byte as buffer
+        if self.position == 0 {
+            self.position = 0b00000001;
+            self.buffer = *self
+                .content
+                .next()
+                .expect("Empty buffer not handlred currently");
+        }
+
         // read current bit
         let bit: Bit = ((self.buffer & self.position) > 0).into();
 
         // update position for next read
         self.position <<= 1;
 
-        // reset position after overflow and assign next byte as buffer
-        if self.position == 0 {
-            self.position = 0b00000001;
-            self.buffer = self.content.pop_front().expect("End of content is not handled right now");
+        bit
+    }
+
+    /// Reads the next n bits from the BitStream.
+    /// The result will be right Alligned, so when reading 4 bits, the 4 rightmost bits of the u32 value will be used.
+    /// When reading over a byte border, the bits of the right byte end up before the bits of the
+    /// left byte (eg. [0b00110011, 0b11001100] -> 0b110000110011 when reading 12 bits).
+    /// It returns a BitResult containing just as many u32 values as needed.
+    /// When interpreting the BitResult, the length of it needs to be used to get a correct interpretation.
+    pub fn next_bits(&mut self, n: usize) -> BitResult {
+        // construct output vector with just as many u32 values as needed to store a result with
+        // length n
+        let mut out: Vec<u32> = vec![0u32; (n + 31) / 32];
+
+        for i in 0..n {
+            if self.next_bit() == Bit::One {
+                // if the value is 1, or it into the output vector at the correct position
+                out[i / 32] |= 1 << (i % 32);
+            }
         }
 
-        bit
+        BitResult::new(out, n)
     }
 }
 
@@ -58,15 +70,58 @@ mod test {
     use super::*;
 
     #[test]
-    fn test_read() {
-        let mut reader = BitReader::new(vec![7, 5]);
-        println!("{}", reader.next_bit());
-        println!("{}", reader.next_bit());
-        println!("{}", reader.next_bit());
-        println!("{}", reader.next_bit());
-        println!("{}", reader.next_bit());
-        println!("{}", reader.next_bit());
-        println!("{}", reader.next_bit());
-        println!("{}", reader.next_bit());
+    fn next_bit() {
+        let mut reader = BitReader::new(&[0b00110011, 0b11001100, 1, 110]);
+        assert_eq!(reader.next_bit(), Bit::One);
+        assert_eq!(reader.next_bit(), Bit::One);
+        assert_eq!(reader.next_bit(), Bit::Zero);
+        assert_eq!(reader.next_bit(), Bit::Zero);
+    }
+
+    #[test]
+    fn next_bit_over_byte_border() {
+        let mut reader = BitReader::new(&[0b00110011, 0b11001100, 1, 110]);
+        assert_eq!(reader.next_bit(), Bit::One);
+        assert_eq!(reader.next_bit(), Bit::One);
+        assert_eq!(reader.next_bit(), Bit::Zero);
+        assert_eq!(reader.next_bit(), Bit::Zero);
+        assert_eq!(reader.next_bit(), Bit::One);
+        assert_eq!(reader.next_bit(), Bit::One);
+        assert_eq!(reader.next_bit(), Bit::Zero);
+        assert_eq!(reader.next_bit(), Bit::Zero);
+        assert_eq!(reader.next_bit(), Bit::Zero);
+        assert_eq!(reader.next_bit(), Bit::Zero);
+        assert_eq!(reader.next_bit(), Bit::One);
+        assert_eq!(reader.next_bit(), Bit::One);
+    }
+
+    #[test]
+    fn next_bits() {
+        let mut reader = BitReader::new(&[0b00110011, 0b11001100]);
+        assert_eq!(dbg!(reader.next_bits(4)), BitResult::new(vec![0b0011], 4));
+    }
+
+    #[test]
+    fn next_bits_over_byte_border() {
+        let mut reader = BitReader::new(&[0b00110011, 0b11001100]);
+        assert_eq!(
+            reader.next_bits(12),
+            BitResult::new(vec![0b110000110011], 12)
+        );
+    }
+
+    #[test]
+    fn next_bits_more_then_32() {
+        let data = [0xAA, 0x00, 0x00, 0x00, 0x03];
+        let mut reader = BitReader::new(&data);
+
+        let result = reader.next_bits(34);
+
+        let expected_vec = vec![
+            0x000000AA, // The first 32 bits
+            0x00000003, // The next 2 bits (from the 5th byte)
+        ];
+
+        assert_eq!(result, BitResult::new(expected_vec, 34));
     }
 }
