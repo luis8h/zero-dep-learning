@@ -17,7 +17,7 @@ pub struct BitReader<'a> {
 
 #[derive(Debug, PartialEq)]
 pub enum BitReaderError {
-    EndOfStream
+    EndOfStream,
 }
 impl fmt::Display for BitReaderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -72,7 +72,7 @@ impl<'a> BitReader<'a> {
             }
         }
 
-        Ok(BitResult::new(out, n))
+        Ok(BitResult::try_from((out, n)).expect("Logical Error in BitReader constructing a wrong BitResult."))
     }
 }
 
@@ -122,7 +122,10 @@ mod test {
     #[test]
     fn next_bits() {
         let mut reader = BitReader::new(&[0b00110011, 0b11001100]);
-        assert_eq!(dbg!(reader.next_bits(4)).unwrap(), BitResult::new(vec![0b0011], 4));
+        assert_eq!(
+            reader.next_bits(4).unwrap(),
+            BitResult::try_from((vec![0b0011], 4)).unwrap()
+        );
     }
 
     #[test]
@@ -130,7 +133,7 @@ mod test {
         let mut reader = BitReader::new(&[0b00110011, 0b11001100]);
         assert_eq!(
             reader.next_bits(12).unwrap(),
-            BitResult::new(vec![0b110000110011], 12)
+            BitResult::try_from((vec![0b110000110011], 12)).unwrap()
         );
     }
 
@@ -146,7 +149,7 @@ mod test {
             0x00000003, // The next 2 bits (from the 5th byte)
         ];
 
-        assert_eq!(result.unwrap(), BitResult::new(expected_vec, 34));
+        assert_eq!(result.unwrap(), BitResult::try_from((expected_vec, 34)).unwrap());
     }
 
     #[test]
